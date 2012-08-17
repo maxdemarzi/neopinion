@@ -119,15 +119,18 @@ def score_sentences(sentences)
     #{"0"=>true, "1"=>"4"}
     #{"0"=>true, "1"=>"9"}
 
+    # I am deleting the last key (which was merged in, but not merged itself)
     sids.reverse!
     sids.delete_at(0)
+
+    # If they are all true, then its good, otherwise mark as false.
     (sids.size - 1).times do |i|
       sids[0].merge!(sids[i+1]) { |key, v1, v2| (v1 == true && v2 == true) ? true : false }
     end
 
     sids[0].delete_if {|key, value| value == false }
 
-   # sentence_scores[s] = (1.0/s[3]) * sids[0].size
+   # Add it to the sentences
     sentences[i] << (1.0/s[3]) * sids[0].size
   end
   sentences
