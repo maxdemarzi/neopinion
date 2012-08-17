@@ -2,7 +2,7 @@ require 'rubygems'
 require 'neography'
 require 'engtagger'
 
-AVERAGE_START_POSITION = 15
+AVERAGE_START_POSITION = 5
 MAXIMUM_GAP = 3
 
 @neo = Neography::Rest.new
@@ -52,10 +52,8 @@ def create_graph
     node_id = key
     properties = {:vsn => valid_start_node(value), :pri => value }
     @neo.set_node_properties(node_id, properties)
+    @neo.add_node_to_index("vsn_index", "vsn", "true", node_id) if properties[:vsn]
   end
-
- # Testing
- get_valid_sentences
 
 end  
 
@@ -71,7 +69,7 @@ def split_sentence(sentence)
    end 
 end
 
-# Valid end nodes are nodes that have an average starting position 
+# Valid start nodes are nodes that have an average starting position
 # less than the parameter passed in.
 #
 def valid_start_node(positions, avg_start_position = AVERAGE_START_POSITION)
@@ -92,88 +90,50 @@ end
 
 
 def get_valid_sentences
-require 'net-http-spy'
-
-# Net::HTTP.http_logger_options = {:verbose => true} # see everything
   @neo = Neography::Rest.new
-  cypher = "START vq=node(*), vs =node:word_tag(tag='pp') 
-            MATCH path = vq -[:co_occurence*]-> vs
-             WHERE vq.vsn! = true
-               AND vs.ven! = true
-               AND length(path) > 2
-             RETURN distinct extract(n in nodes(path) : [n.tag, n.word, n.pri]"
-  cypher = "START vq=node(*), vs =node:word_tag(tag='pp') 
-            MATCH path = vq -[:co_occurence*]-> vs
-            WHERE vq.vsn! = true
-              AND vs.ven! = true
-              AND length(path) > 2
-            RETURN distinct extract(n in nodes(path) : n.word), 
-                            extract(n in nodes(path) : n.tag), 
-                            extract(n in nodes(path) : n.pri)"
-  result = @neo.execute_query(cypher)
-  puts result.inspect    
+  cypher = "START vq=node:vsn_index(vsn='true'), vs =node:word_tag('tag:(pp OR cc)')
+            MATCH path = vq -[:co_occurence*2..10]-> vs
+            RETURN distinct extract(n in nodes(path) : n.word),
+                            extract(n in nodes(path) : n.tag),
+                            extract(n in nodes(path) : n.pri),
+                            LENGTH(path)  "
+  result = @neo.execute_query(cypher)["data"]
 end
 
-# a set of directed edges such that:
-# (1) vq is a VSN 
-# (2) vs is a VEN and
-# (3) W satisﬁes a set of well-formedness POS constraints.
-# - 1. . ∗ (/nn) + . ∗ (/vb) + . ∗ (/jj) + .∗
-# - 2. . ∗ (/jj) + . ∗ (/to) + . ∗ (/vb).∗
-# - 3. . ∗ (/rb) ∗ . ∗ (/jj) + . ∗ (/nn) + .∗
-# - 4. . ∗ (/rb) + . ∗ (/in) + . ∗ (/nn) + .∗
-#
-def valid_path_all
-  "START vq = node(*)" + 
-  "MATCH path = vq -[:co_occurence*0..15]-> w1 " + 
-                  "-[:co_occurence*1..15]-> w2 " +
-                  "-[:co_occurence*1..15]-> w3 " + 
-                  "-[:co_occurence*0..15]-> vs " +
-  "WHERE vs.vsn! = true " +
-  "  AND ve.ven! = true " +
-  "  AND ( (w1.tag! = 'nn' AND w2.tag! = 'vb' AND w3.tag! = 'jj' ) " +
-  "     OR (w1.tag! = 'jj' AND w2.tag! = 'to' AND w3.tag! = 'vb' ) " +
-  "     OR (w1.tag! = 'rb' AND w2.tag! = 'jj' AND w3.tag! = 'nn' ) " +
-  "     OR (w1.tag! = 'rb' AND w2.tag! = 'in' AND w3.tag! = 'nn' ) ) " +
-  "RETURN path"    
+# r(q, s), is the number of overlapping sentences covered by this path,
+def score_sentences(sentences)
+ # sentence_scores = Hash.new
+  sentences.each_with_index do |s,i|
+    sids =  s[2].collect{|a| Hash[a.collect{|b| b.split(':')}]}
+    # [{"0"=>"6", "1"=>"4"}, {"0"=>"2", "1"=>"5"}, {"0"=>"3", "1"=>"6"}, {"1"=>"7"}, {"0"=>"4", "1"=>"8"}, {"0"=>"5"}, {"0"=>"6", "1"=>"4"}, {"0"=>"7"}, {"0"=>"8", "1"=>"9"}]
+
+    (sids.size - 1).times do |i|
+      sids[i].merge!(sids[i+1]) { |key, v1, v2| (v1.to_i - v2.to_i).abs < MAXIMUM_GAP ? true : false }
+    end
+    #{"0"=>false, "1"=>true}
+    #{"0"=>true, "1"=>true}
+    #{"0"=>"3", "1"=>true}
+    #{"1"=>true, "0"=>"4"}
+    #{"0"=>true, "1"=>"8"}
+    #{"0"=>true, "1"=>"4"}
+    #{"0"=>true, "1"=>"4"}
+    #{"0"=>true, "1"=>"9"}
+
+    sids.reverse!
+    sids.delete_at(0)
+    (sids.size - 1).times do |i|
+      sids[0].merge!(sids[i+1]) { |key, v1, v2| (v1 == true && v2 == true) ? true : false }
+    end
+
+    sids[0].delete_if {|key, value| value == false }
+
+   # sentence_scores[s] = (1.0/s[3]) * sids[0].size
+    sentences[i] << (1.0/s[3]) * sids[0].size
+  end
+  sentences
 end
 
-
-def valid_path_one
-  "START vq = node(*)" + 
-  "MATCH vq -[:co_occurence*0..*]-> w1 " + 
-           "-[:co_occurence*1..*]-> w2 " +
-           "-[:co_occurence*1..*]-> w3 " + 
-           "-[:co_occurence*0..*]-> ve " +
-  "WHERE vq.vsn = true " +
-  "  AND vs.ven = true " +
-  "  AND w1.tag = 'nn' " +
-  "  AND w2.tag = 'vb' " +
-  "  AND w3.tag = 'jj' "
-end
-
-def valid_path_two
-  "START vq = node(*)"
-  "MATCH vq -[:co_occurence*0..*]-> w1 " + 
-           "-[:co_occurence*1..*]-> w2 " +
-           "-[:co_occurence*1..*]-> w3 " + 
-           "-[:co_occurence*0..*]-> ve " +
-  "WHERE vq.vsn = true " +
-  "  AND vs.ven = true " +
-  "  AND w1.tag = 'jj' " +
-  "  AND w2.tag = 'to' " +
-  "  AND w3.tag = 'vb' "
-end
-
-def valid_path_two
-  "START vq = node(*)"
-  "MATCH vq -[:co_occurence*0..*]-> w1 " + 
-           "-[:co_occurence*1..*]-> w2 " +
-           "-[:co_occurence*1..*]-> w3 " + 
-           "-[:co_occurence*0..*]-> ve " +
-  "WHERE vq.vsn = true " +
-  "  AND vs.ven = true " +
-  "  AND w1.tag = 'jj' " +
-  "  AND w2.tag = 'to' " +
-  "  AND w3.tag = 'vb' "
+def test
+  sentences = get_valid_sentences
+  puts score_sentences(sentences).sort! {|x,y| y[4] <=> x[4] }.collect{|s| "#{s[4]} : #{s[0].join(' ') }"}
 end

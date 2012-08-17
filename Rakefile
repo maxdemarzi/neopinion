@@ -5,7 +5,7 @@ namespace :neo4j do
   task :create do
     create_graph
   end
-  task :valid do
-    get_valid_sentences
+  task :test do
+    test
   end  
 end
