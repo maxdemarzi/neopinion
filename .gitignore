@@ -1,2 +1,4 @@
 .project
 neo4j
+.idea
+*.iml
